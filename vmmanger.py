@@ -6,7 +6,6 @@ import re
 import subprocess
 import sys
 import time
-from asyncio import StreamReader
 from typing import AsyncIterator
 import yaml
 
@@ -15,6 +14,59 @@ def read_yaml(yaml_path):
     with open(yaml_path, 'r', encoding='utf8') as stream:
         contents = yaml.safe_load(stream)
     return contents
+
+
+def run_command(command):
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=True)
+        return result.stdout
+    except subprocess.CalledProcessError as e:
+        print(f"Error executing command {' '.join(command)}: {e}")
+        return ""
+
+
+def get_domain_list():
+    """Get list of all virtual machine domains"""
+    output = run_command(["virsh", "-q", "list", "--all"])
+    return [line.split()[1] for line in output.splitlines() if line.strip()]
+
+
+def get_volume_list():
+    """Get list of all storage volumes in default pool"""
+    output = run_command(["virsh", "-q", "vol-list", "default"])
+    return [line.split()[1] for line in output.splitlines() if line.strip()]
+
+
+def cleanup_managedsaves():
+    domains = get_domain_list()
+    for domain in domains:
+         print(f"Removing managed save for {domain}")
+         run_command(["virsh", "managedsave-remove", domain])
+
+
+def cleanup_domains():
+    """Stop and undefine all virtual machine domains"""
+    domains = get_domain_list()
+    for domain in domains:
+        print(f"Cleaning up domain: {domain}")
+        run_command(["virsh", "destroy", domain])
+        run_command(["virsh", "undefine", domain])
+
+
+def cleanup_volumes():
+    """Delete all volumes in the default storage pool"""
+    volumes = get_volume_list()
+    for volume in volumes:
+        print(f"Deleting volume: {volume}")
+        run_command(["virsh", "vol-delete", volume])
+
+
+def delete_vms():
+    print("Starting virtual machine cleanup...")
+    cleanup_managedsaves()
+    cleanup_domains()
+    cleanup_volumes()
+    print("Cleanup complete!")
 
 
 def generate_hostname():
@@ -30,7 +82,7 @@ def generate_hostname():
     return f"mns-{adjective}-{mascot}"
 
 
-async def read_stream(stream: StreamReader, prefix: str = "") -> AsyncIterator[str]:
+async def read_stream(stream: asyncio.StreamReader, prefix: str = "") -> AsyncIterator[str]:
     """
     Read from a StreamReader line by line.
     """
@@ -70,7 +122,7 @@ async def create_vm(hostname):
     captured_stderr = []
 
     # Process stdout and stderr concurrently
-    async def handle_stream(stream: StreamReader, is_stderr: bool):
+    async def handle_stream(stream: asyncio.StreamReader, is_stderr: bool):
         async for line in read_stream(stream):
             # Store in appropriate list
             if is_stderr:
@@ -102,15 +154,10 @@ async def create_vm(hostname):
 def get_vm_mac(hostname):
     """Get MAC address of VM using virsh domiflist"""
     try:
-        result = subprocess.run(
-            ['virsh', 'domiflist', hostname],
-            capture_output=True,
-            text=True,
-            check=True
-        )
+        result = run_command(['virsh', 'domiflist', hostname])
         
         # Parse the output to get MAC address
-        for line in result.stdout.split('\n'):
+        for line in result.split('\n'):
             if 'br0' in line:
                 return line.split()[4]  # MAC address field
         return None
@@ -122,13 +169,8 @@ def get_vm_mac(hostname):
 def get_ip_for_host(hostname):
     """Get IP address using virsh domipaddr with arp source"""
     try:
-        result = subprocess.run(
-            ['virsh', '-q', 'domifaddr', hostname, '--source', 'agent'],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        for row in result.stdout.split("\n"): 
+        result = run_command(['virsh', '-q', 'domifaddr', hostname, '--source', 'agent'])
+        for row in result.split("\n"): 
             if "enp" in row and "ipv4" in row:
                 parts = list(filter(None, map(lambda x: x.strip(), row.split(" "))))
                 ip_address = parts[3] if len(parts) >= 4 else None
@@ -143,15 +185,10 @@ def get_ip_from_mac(mac):
     """Get IP address by scanning the network for the MAC address"""
     try:
         # Get the br0 interface subnet
-        result = subprocess.run(
-            ['ip', 'addr', 'show', 'br0'],
-            capture_output=True,
-            text=True,
-            check=True
-        )
+        result = run_command(['ip', 'addr', 'show', 'br0'])
         
         # Extract IP/subnet using regex
-        match = re.search(r'inet (\d+\.\d+\.\d+\.\d+)/(\d+)', result.stdout)
+        match = re.search(r'inet (\d+\.\d+\.\d+\.\d+)/(\d+)', result)
         if not match:
             return "Bridge IP not found"
             
@@ -160,36 +197,55 @@ def get_ip_from_mac(mac):
         
         # Try nmap first (commonly available on Arch)
         try:
-            scan_result = subprocess.run(
-                ['nmap', '-sn', f'{network_prefix}.0/24'],
-                capture_output=True,
-                text=True,
-                check=True
-            )
+            scan_result = run_command(['nmap', '-sn', f'{network_prefix}.0/24'])
             # Update ARP cache
             subprocess.run(['sudo', 'ip', 'neigh', 'flush', 'all'], check=True)
         except subprocess.CalledProcessError:
             pass  # Continue to arp cache check if nmap fails
         
         # Check arp cache
-        arp_result = subprocess.run(
-            ['ip', 'neigh', 'show'],
-            capture_output=True,
-            text=True,
-            check=True
-        )
+        arp_result = run_command(['ip', 'neigh', 'show'])
         
         # Find the IP address matching our MAC
-        for line in arp_result.stdout.split('\n'):
+        for line in arp_result.split('\n'):
             if mac.lower() in line.lower():
                 return line.split()[0]  # IP address field
         
         return "IP not found"
     except subprocess.CalledProcessError as e:
         return f"Error scanning network: {str(e)}"
+    
+
+def wait_for_ips(hostnames, timeout=120):
+    print("\nWaiting for VMs to boot and obtain IP addresses...")
+    time_taken = 0
+    ips_found = {}
+    
+    while len(ips_found.keys()) < 3 and time_taken < timeout:
+        time.sleep(5) 
+        time_taken += 5
+        for hostname in hostnames:
+            ip = get_ip_for_host(hostname)
+            ips_found[ip] = True
 
 
-async def main(num_vms_required: int):
+def display_summary(hostnames):
+    print("\nVM Information:")
+    print("-" * 50)
+    for hostname in hostnames:
+        mac = get_vm_mac(hostname)
+        if mac:
+            ip = get_ip_for_host(hostname)
+            print(f"Hostname: {hostname}")
+            print(f"MAC Address: {mac}")
+            print(f"IP Address: {ip}")
+        else:
+            print(f"Hostname: {hostname}")
+            print("Could not retrieve MAC address")
+        print("-" * 50)
+
+
+async def create_vms(num_vms_required: int):
     # Check if br0 exists
     try:
         subprocess.run(['ip', 'link', 'show', 'br0'], check=True, capture_output=True)
@@ -218,49 +274,26 @@ async def main(num_vms_required: int):
         else:
             raise RuntimeError(f"Unexpected result: {result}")
 
-    wait_for_ips(vms)
-    display_summary(vms)
+    new_hostnames = list(map(lambda x: x[0], vms))
+    wait_for_ips(new_hostnames)
+    display_summary(new_hostnames)
 
-
-def wait_for_ips(vms, timeout=60):
-    print("\nWaiting for VMs to boot and obtain IP addresses...")
-    time_taken = 0
-    ips_found = {}
-    
-    while len(ips_found.keys()) < 3 and time_taken < timeout:
-        time.sleep(5) 
-        time_taken += 5
-        for hostname, details in vms:
-            ip = get_ip_for_host(hostname)
-            ips_found[ip] = True
-
-
-def display_summary(vms):
-    print("\nVM Information:")
-    print("-" * 50)
-    for hostname, details in vms:
-        mac = get_vm_mac(hostname)
-        if mac:
-            ip = get_ip_for_host(hostname)
-            print(f"Hostname: {hostname}")
-            print(f"MAC Address: {mac}")
-            print(f"IP Address: {ip}")
-        else:
-            print(f"Hostname: {hostname}")
-            print("Could not retrieve MAC address")
-        print("-" * 50)
 
 def print_help_and_die():
-    print(f"Usage {sys.argv[0]} (create <num vms>) | summary <vm name>")
+    print(f"Usage {sys.argv[0]} (create <num vms>) | status [vm name] | destroy")
     sys.exit(1)
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print_help_and_die()
+        
+    command =  sys.argv[1]
 
-    if sys.argv[1] == 'create':
-        asyncio.run(main(int(sys.argv[2])))
-    elif sys.argv[1] == 'status':
-        display_summary([(sys.argv[2], {})])
+    if command == 'create':
+        asyncio.run(create_vms(int(sys.argv[2])))
+    elif command == 'destroy':
+        delete_vms()
+    elif command == 'status':
+        display_summary()
     else:
         print_help_and_die()
