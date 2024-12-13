@@ -155,7 +155,7 @@ def get_vm_mac(hostname):
     """Get MAC address of VM using virsh domiflist"""
     try:
         result = run_command(['virsh', 'domiflist', hostname])
-        
+
         # Parse the output to get MAC address
         for line in result.split('\n'):
             if 'br0' in line:
@@ -166,7 +166,6 @@ def get_vm_mac(hostname):
         return None
 
 
-def get_ip_for_host(hostname):
     """Get IP address using virsh domipaddr with arp source"""
     try:
         result = run_command(['virsh', '-q', 'domifaddr', hostname, '--source', 'agent'])
@@ -180,6 +179,7 @@ def get_ip_for_host(hostname):
         print(f"Error getting IP Address: {str(e)}")
 
     return None
+
 
 def get_ip_from_mac(mac):
     """Get IP address by scanning the network for the MAC address"""
@@ -283,11 +283,12 @@ def print_help_and_die():
     print(f"Usage {sys.argv[0]} (create <num vms>) | status [vm name] | destroy")
     sys.exit(1)
 
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print_help_and_die()
         
-    command =  sys.argv[1]
+    command = sys.argv[1]
 
     if command == 'create':
         asyncio.run(create_vms(int(sys.argv[2])))
