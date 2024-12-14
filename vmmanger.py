@@ -166,6 +166,7 @@ def get_vm_mac(hostname):
         return None
 
 
+def get_ip_for_host(hostname: str):
     """Get IP address using virsh domipaddr with arp source"""
     try:
         result = run_command(['virsh', '-q', 'domifaddr', hostname, '--source', 'agent'])
@@ -245,6 +246,12 @@ def display_summary(hostnames):
         print("-" * 50)
 
 
+def tag_vmmanager_managed(hostnames): 
+    for hostname in hostnames:
+        run_command(['virsh', 'metadata', hostname, 'https://aaronbonner.io/xmlns/libvirt/domain/1.0', 
+                     'vmmanager', '<vmmanager><managed>1</managed></vmmanager>'])
+
+
 async def create_vms(num_vms_required: int):
     # Check if br0 exists
     try:
@@ -277,6 +284,7 @@ async def create_vms(num_vms_required: int):
     new_hostnames = list(map(lambda x: x[0], vms))
     wait_for_ips(new_hostnames)
     display_summary(new_hostnames)
+    tag_vmmanager_managed(new_hostnames)
 
 
 def print_help_and_die():
@@ -295,6 +303,6 @@ if __name__ == "__main__":
     elif command == 'destroy':
         delete_vms()
     elif command == 'status':
-        display_summary()
+        display_summary(get_domain_list())
     else:
         print_help_and_die()
