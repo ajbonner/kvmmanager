@@ -100,7 +100,7 @@ async def create_vm(hostname):
     cmd = [
         'virt-install',
         '--name', hostname,
-        '--ram', '2048',
+        '--memory', f"memory={str(32 * 1024)},currentMemory={str(4 * 1024)}",
         '--vcpus', '2',
         '--disk', f'size=20',
         '--os-variant', 'almalinux9',
@@ -287,6 +287,22 @@ async def create_vms(num_vms_required: int):
     tag_vmmanager_managed(new_hostnames)
 
 
+def restart_vms(hostnames):
+    """
+    Restart vms matching hostnames provided, if all is listed then all
+    domains (vms) are restarted
+    """
+    if hostnames[0] == "all":
+        hostnames = get_domain_list()
+
+    for hostname in hostnames:
+        run_command(['virsh', 'shutdown', hostname])
+        time.sleep(1)
+
+    for hostname in hostnames:
+        run_command(['virsh', 'start', hostname])
+
+
 def print_help_and_die():
     print(f"Usage {sys.argv[0]} (create <num vms>) | status [vm name] | destroy")
     sys.exit(1)
@@ -304,5 +320,7 @@ if __name__ == "__main__":
         delete_vms()
     elif command == 'status':
         display_summary(get_domain_list())
+    elif command == 'restart':
+        restart_vms(sys.argv[2:])
     else:
         print_help_and_die()

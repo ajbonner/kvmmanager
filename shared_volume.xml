@@ -1,0 +1,5 @@
+<?xml version="1.0"?>
+<filesystem type="mount" accessmode="passthrough">
+    <source dir="/srv/shared"/>
+    <target dir="shared"/>
+</filesystem>
